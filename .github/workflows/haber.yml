@@ -1,0 +1,36 @@
+name: AI Haber Yayinci
+
+on:
+  schedule:
+    - cron: '0 */3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  haber-uret:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Depoyu al
+        uses: actions/checkout@v4
+
+      - name: Python kur
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Gereksinimler
+        run: pip install requests
+
+      - name: Git kimligi
+        run: |
+          git config user.name  "zamgelmedenal-bot"
+          git config user.email "bot@zamgelmedenal.com"
+
+      - name: AI haberleri uret ve yayinla
+        env:
+          GROQ_API_KEY:   ${{ secrets.GROQ_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          HABER_SAYISI:   '6'
+        run: python3 news_ai_publisher.py --out news.json --push
