@@ -56,6 +56,10 @@ KATEGORILER = {
     "gastronomi": ("food gastronomy cuisine chef restaurant", "food gastronomy cuisine", "Gastronomi"),
 }
 HER_KATEGORI = int(os.environ.get("HABER_SAYISI", "6"))  # kategori başına üretilecek haber
+ZAMAN_BUTCESI = int(os.environ.get("ZAMAN_BUTCESI_SN", "540"))  # sn — bu süreyi asla aşma (Groq limitine takılıp saatlerce dönmesin)
+_BASLANGIC = time.time()
+def _sure_doldu():
+    return (time.time() - _BASLANGIC) > ZAMAN_BUTCESI
 
 SYSTEM_PROMPT = (
     "Sen 'ZamGelmedenAl' adlı Türk haber sitesinin editörüsün. Sana genellikle "
@@ -68,7 +72,13 @@ SYSTEM_PROMPT = (
     "Sayı, isim, yer gibi olguları DEĞİŞTİRME; sadece dili yeniden kur. "
     "Emin olmadığın bilgiyi uydurma. SADECE şu JSON'u döndür, başka hiçbir şey yazma: "
     '{"baslik":"...","ozet":"...","etiket":"..."}. '
-    "baslik en fazla 90 karakter, ozet 2-3 cümle (en fazla 240 karakter), "
+    "SADECE şu JSON alanlarını doldur: baslik, ozet, govde, etiket. "
+    "baslik en fazla 90 karakter. ozet 2-3 cümle (en fazla 240 karakter). "
+    "govde: 3-4 KISA paragraf (toplam 500-800 karakter), Türkçe, KENDİ cümlelerinle, "
+    "akıcı ve halktan biri gibi. ÖNEMLİ: govde SADECE verilen bilgilere ve genel/ortak "
+    "bağlama dayansın; kaynakta OLMAYAN sayı, isim, tarih, alıntı UYDURMA. Emin olmadığın "
+    "ayrıntıyı yazma, gerekiyorsa \"ayrıntılar kaynakta\" de. Paragrafları \\n\\n ile ayır. "
+    "Son paragrafta kısa bir yorum/analiz ekle (okura ne ifade ediyor). "
     "etiket tek kelime (ör. Dünya, Avrupa, ABD, Analiz, Gündem)."
 )
 
@@ -130,31 +140,34 @@ def groq_yaz(ham_baslik: str, ham_ozet: str):
     payload = {
         "model": GROQ_MODEL,
         "temperature": 0.7,
-        "max_tokens": 400,
+        "max_tokens": 800,
         "response_format": {"type": "json_object"},
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": f"[Yabancı kaynak — Türkçeye çevirip yeniden yaz]\nHam başlık: {ham_baslik}\nHam özet: {ham_ozet}"},
         ],
     }
-    for deneme in range(3):
+    for deneme in range(2):
         try:
             r = requests.post(
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers={"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"},
-                json=payload, timeout=40,
+                json=payload, timeout=25,
             )
             if r.status_code == 429:  # oran limiti — bekle
-                time.sleep(3 + deneme * 3)
+                time.sleep(2 + deneme * 2)
                 continue
             r.raise_for_status()
             içerik = r.json()["choices"][0]["message"]["content"]
             veri = json.loads(içerik)
             b = temizle(veri.get("baslik", ""))[:110]
             o = temizle(veri.get("ozet", ""))[:260]
+            g = (veri.get("govde", "") or "").strip()
+            # paragraf ayraclarini koru, tek tek temizle
+            g = "\n\n".join(temizle(p) for p in re.split(r"\n\s*\n", g) if p.strip())[:1200]
             e = temizle(veri.get("etiket", "Gündem"))[:24] or "Gündem"
             if b and o:
-                return {"baslik": b, "ozet": o, "etiket": e}
+                return {"baslik": b, "ozet": o, "govde": g, "etiket": e}
         except Exception as ex:
             print(f"  groq hata ({deneme+1}): {ex}")
             time.sleep(2)
@@ -220,6 +233,9 @@ def kategori_uret(key: str):
     for i, x in enumerate(ham):
         if len(sonuc) >= HER_KATEGORI:
             break
+        if _sure_doldu():
+            print(f"  {key}: zaman butcesi doldu, kalan haberler atlandi")
+            break
         y = groq_yaz(x["ham_baslik"], x["ham_ozet"])
         if not y:
             continue  # AI yazamadıysa o haberi atla (kopya yayımlama)
@@ -227,6 +243,7 @@ def kategori_uret(key: str):
         sonuc.append({
             "t": y["baslik"],
             "d": y["ozet"],
+            "govde": y.get("govde", ""),
             "k": y["etiket"] or etiket_ana,
             "s": "🌐 " + (x["kaynak"] or "Yabancı Kaynak") + " · çeviri/derleme",
             "time": gorecel(x["pub"]),
@@ -267,6 +284,9 @@ def main():
     keys = [args.sadece] if args.sadece else list(KATEGORILER)
     veri = {}
     for k in keys:
+        if _sure_doldu():
+            print(f"[{k}] ATLANDI — zaman butcesi doldu (kalan kategoriler bir sonraki calismada)")
+            continue
         print(f"[{k}] işleniyor…")
         items = kategori_uret(k)
         if items:
